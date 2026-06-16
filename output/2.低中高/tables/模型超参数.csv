@@ -1,0 +1,17 @@
+﻿参数,取值
+objective,multiclass
+num_class,3
+metric,multi_logloss
+boosting_type,gbdt
+num_leaves,7
+max_depth,3
+learning_rate,0.02
+n_estimators,300
+subsample,0.6
+colsample_bytree,0.6
+reg_alpha,2.0
+reg_lambda,3.0
+min_child_samples,30
+random_state,42
+verbose,-1
+n_jobs,-1
