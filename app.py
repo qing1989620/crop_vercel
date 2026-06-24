@@ -11,6 +11,7 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
+import plotly.graph_objects as go
 import time
 import datetime
 import random
@@ -22,20 +23,23 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from config import (
     APP_TITLE, APP_LAYOUT, AUTO_REFRESH_INTERVAL, ENABLE_AUTO_REFRESH,
-    RISK_LEVELS, BASE_CONTROL_PLANS, SIMULATION_MODES, DEFAULT_SIMULATION_MODE
+    RISK_LEVELS, BASE_CONTROL_PLANS, SIMULATION_MODES, DEFAULT_SIMULATION_MODE,
+    OPS_SECTION_TITLE, OPS_SECTION_SUBTITLE
 )
 from utils.data_loader import (
     load_main_dataset, load_prevention_plan, load_response_zone_summary,
     load_three_tier_summary, load_strategy_system, load_risk_window_cross,
     load_feature_importance, load_shap_contributions, load_kpi_metrics,
     load_confusion_matrix, load_roc_auc, load_category_distribution,
-    load_posi_weights, get_time_based_plan, get_risk_color_map
+    load_posi_weights, get_time_based_plan, get_risk_color_map,
+    generate_ops_metrics
 )
 from utils.charts import (
     create_risk_pie_chart, create_risk_bar_chart, create_spatial_risk_map,
     create_time_trend_chart, create_feature_importance_chart,
     create_shap_chart, create_kpi_gauge, create_response_zone_chart,
-    create_posi_weight_chart, create_risk_heatmap
+    create_posi_weight_chart, create_risk_heatmap,
+    create_data_flow_sankey, create_asset_increment_chart, create_service_call_chart
 )
 
 # ==================== 页面基础配置 ====================
@@ -437,10 +441,10 @@ with col5:
 chart_col1, chart_col2 = st.columns(2)
 with chart_col1:
     pie_fig = create_risk_pie_chart(df_filtered)
-    st.plotly_chart(pie_fig, width='stretch')
+    st.plotly_chart(pie_fig, use_container_width=True)
 with chart_col2:
     bar_fig = create_risk_bar_chart(df_filtered)
-    st.plotly_chart(bar_fig, width='stretch')
+    st.plotly_chart(bar_fig, use_container_width=True)
 
 st.markdown('<hr class="custom-divider">', unsafe_allow_html=True)
 
@@ -452,7 +456,7 @@ map_col1, map_col2 = st.columns([2, 1])
 
 with map_col1:
     map_fig = create_spatial_risk_map(df_filtered)
-    st.plotly_chart(map_fig, width='stretch')
+    st.plotly_chart(map_fig, use_container_width=True)
 
 with map_col2:
     st.markdown("### 📋 风险等级图例")
@@ -477,7 +481,7 @@ with map_col2:
         st.markdown("### 🌳 品种风险分布")
         variety_risk = df_filtered.groupby("果树品种")[risk_col].value_counts().unstack(fill_value=0)
         variety_risk.columns = [f"{RISK_LEVELS.get(c, {}).get('label', c)}" for c in variety_risk.columns]
-        st.dataframe(variety_risk, width='stretch')
+        st.dataframe(variety_risk, use_container_width=True)
 
 st.markdown('<hr class="custom-divider">', unsafe_allow_html=True)
 
@@ -489,16 +493,16 @@ trend_col1, trend_col2 = st.columns(2)
 
 with trend_col1:
     trend_fig = create_time_trend_chart(df_filtered)
-    st.plotly_chart(trend_fig, width='stretch')
+    st.plotly_chart(trend_fig, use_container_width=True)
 
 with trend_col2:
     heatmap_fig = create_risk_heatmap(df_filtered)
-    st.plotly_chart(heatmap_fig, width='stretch')
+    st.plotly_chart(heatmap_fig, use_container_width=True)
 
 st.markdown("### 风险等级 × 防治窗口 交叉统计明细")
 risk_window_data = data.get("risk_window", pd.DataFrame())
 if not risk_window_data.empty:
-    st.dataframe(risk_window_data, width='stretch')
+    st.dataframe(risk_window_data, use_container_width=True)
 else:
     if "在防治窗口内" in df_filtered.columns:
         window_col = "在防治窗口内"
@@ -512,7 +516,7 @@ else:
         )
     else:
         cross = pd.DataFrame({"说明": ["该数据集无防治窗口字段"]})
-    st.dataframe(cross, width='stretch')
+    st.dataframe(cross, use_container_width=True)
 
 st.markdown('<hr class="custom-divider">', unsafe_allow_html=True)
 
@@ -564,7 +568,7 @@ with plot_col2:
     )
 with plot_col3:
     st.markdown("<br>", unsafe_allow_html=True)
-    if st.button("🎲 随机选择地块", width='stretch'):
+    if st.button("🎲 随机选择地块", use_container_width=True):
         selected_plot = random.choice(filtered_ids) if filtered_ids else plot_ids[0]
         st.rerun()
 
@@ -627,7 +631,7 @@ else:
                         posi_data[c] = str(plot_row[c])
             if posi_data:
                 posi_df = pd.DataFrame(list(posi_data.items()), columns=["指标", "值"])
-                st.dataframe(posi_df, width='stretch', hide_index=True)
+                st.dataframe(posi_df, use_container_width=True, hide_index=True)
     
     with detail_col2:
         advice_class = {0: "advice-box-low", 1: "advice-box-mid", 2: "advice-box-high"}
@@ -691,7 +695,7 @@ else:
         
         if env_values:
             env_df = pd.DataFrame(list(env_values.items()), columns=["指标", "数值"])
-            st.dataframe(env_df, width='stretch', hide_index=True)
+            st.dataframe(env_df, use_container_width=True, hide_index=True)
 
 st.markdown('<hr class="custom-divider">', unsafe_allow_html=True)
 
@@ -707,7 +711,7 @@ strat_col1, strat_col2 = st.columns(2)
 with strat_col1:
     if not response_zone_df.empty:
         zone_fig = create_response_zone_chart(response_zone_df)
-        st.plotly_chart(zone_fig, width='stretch')
+        st.plotly_chart(zone_fig, use_container_width=True)
     else:
         st.info("暂无防控响应区数据")
 
@@ -717,7 +721,7 @@ with strat_col2:
         strategy_display = strategy_df.copy()
         if "防控维度" in strategy_display.columns:
             strategy_display = strategy_display.set_index("防控维度").T
-        st.dataframe(strategy_display, width='stretch')
+        st.dataframe(strategy_display, use_container_width=True)
     else:
         st.info("暂无防控策略数据")
 
@@ -725,7 +729,7 @@ prevention_df = data.get("prevention", pd.DataFrame())
 if not prevention_df.empty:
     st.markdown("### 💊 防控单元精准方案推荐")
     display_cols = [c for c in prevention_df.columns if prevention_df[c].nunique() > 0][:8]
-    st.dataframe(prevention_df[display_cols], width='stretch', height=300)
+    st.dataframe(prevention_df[display_cols], use_container_width=True, height=300)
 
 st.markdown('<hr class="custom-divider">', unsafe_allow_html=True)
 
@@ -742,24 +746,24 @@ explain_col1, explain_col2 = st.columns(2)
 with explain_col1:
     if not fi_df.empty:
         fi_fig = create_feature_importance_chart(fi_df)
-        st.plotly_chart(fi_fig, width='stretch')
+        st.plotly_chart(fi_fig, use_container_width=True)
     else:
         st.info("暂无特征重要性数据")
 
 with explain_col2:
     if not shap_df.empty:
         shap_fig = create_shap_chart(shap_df)
-        st.plotly_chart(shap_fig, width='stretch')
+        st.plotly_chart(shap_fig, use_container_width=True)
     elif not posi_df.empty:
         posi_fig = create_posi_weight_chart(posi_df)
-        st.plotly_chart(posi_fig, width='stretch')
+        st.plotly_chart(posi_fig, use_container_width=True)
     else:
         st.info("暂无SHAP/POSI数据")
 
 if not posi_df.empty:
     st.markdown("### ⚖️ POSI 环境因子权重")
     posi_fig = create_posi_weight_chart(posi_df)
-    st.plotly_chart(posi_fig, width='stretch')
+    st.plotly_chart(posi_fig, use_container_width=True)
 
 st.markdown('<hr class="custom-divider">', unsafe_allow_html=True)
 
@@ -794,29 +798,199 @@ if not kpi_df.empty:
         auc_val = 0.9997
     
     gauge_fig = create_kpi_gauge(float(f1_val), float(recall_val), float(precision_val), float(auc_val))
-    st.plotly_chart(gauge_fig, width='stretch')
+    st.plotly_chart(gauge_fig, use_container_width=True)
 
 kpi_col1, kpi_col2 = st.columns(2)
 
 with kpi_col1:
     if not kpi_df.empty:
         st.markdown("### 📋 各等级分类报告")
-        st.dataframe(kpi_df, width='stretch', hide_index=True)
+        st.dataframe(kpi_df, use_container_width=True, hide_index=True)
 
 with kpi_col2:
     if not confusion_df.empty:
         st.markdown("### 🎯 混淆矩阵")
-        st.dataframe(confusion_df, width='stretch', hide_index=True)
+        st.dataframe(confusion_df, use_container_width=True, hide_index=True)
     
     cat_df = data.get("category_dist", pd.DataFrame())
     if not cat_df.empty:
         st.markdown("### 📊 样本分布")
-        st.dataframe(cat_df, width='stretch', hide_index=True)
+        st.dataframe(cat_df, use_container_width=True, hide_index=True)
 
 if not roc_df.empty:
     st.markdown("### 🎯 ROC-AUC 性能")
-    st.dataframe(roc_df, width='stretch', hide_index=True)
+    st.dataframe(roc_df, use_container_width=True, hide_index=True)
 
+
+# ==================== 模块8：数据资产运营中心 ====================
+st.markdown('<hr class="custom-divider">', unsafe_allow_html=True)
+st.markdown(f"## {OPS_SECTION_TITLE}")
+st.markdown(f"*{OPS_SECTION_SUBTITLE}*")
+
+ops = generate_ops_metrics()
+sim_mode = st.session_state.get("sim_mode", DEFAULT_SIMULATION_MODE)
+
+# --- 数据价值链 Sankey 流转图 ---
+st.markdown("<br><br><br>", unsafe_allow_html=True)
+sankey_fig = create_data_flow_sankey()
+st.plotly_chart(sankey_fig, use_container_width=True)
+st.markdown('<hr class="custom-divider">', unsafe_allow_html=True)
+
+# 指标卡色系映射
+CARD_GRADIENTS = {
+    "blue": "linear-gradient(135deg, #3498db, #2980b9)",
+    "teal": "linear-gradient(135deg, #1abc9c, #16a085)",
+    "green": "linear-gradient(135deg, #2ecc71, #27ae60)",
+    "orange": "linear-gradient(135deg, #f39c12, #e67e22)",
+    "red": "linear-gradient(135deg, #e74c3c, #c0392b)",
+    "purple": "linear-gradient(135deg, #9b59b6, #8e44ad)",
+    "gold": "linear-gradient(135deg, #f1c40f, #f39c12)",
+}
+
+def make_cards_html(cards, cols_per_row=4):
+    """渲染指标卡行"""
+    n = len(cards)
+    for row_start in range(0, n, cols_per_row):
+        row_cards = cards[row_start:row_start + cols_per_row]
+        cols = st.columns(len(row_cards))
+        for i, card in enumerate(row_cards):
+            grad = CARD_GRADIENTS.get(card["color"], CARD_GRADIENTS["blue"])
+            with cols[i]:
+                st.markdown(f"""
+                <div class="metric-card" style="background:{grad};">
+                    <div class="metric-label">{card['label']}</div>
+                    <div class="metric-value">{card['value']}</div>
+                    <div class="metric-delta">{card['delta']}</div>
+                </div>
+                """, unsafe_allow_html=True)
+
+# ===== ① 原始多源数据台账 =====
+st.markdown("### ① 原始多源数据台账")
+raw = ops["raw_data_ledger"]
+make_cards_html(raw["cards"])
+
+raw_col1, raw_col2 = st.columns([3, 2])
+with raw_col1:
+    raw_chart = raw["chart_data"]
+    raw_pivot = raw_chart.pivot(index="月份", columns="数据源", values="接入量")
+    fig_raw = go.Figure()
+    colors_src = ["#3498db", "#1abc9c", "#f39c12", "#9b59b6"]
+    for idx, src in enumerate(raw_pivot.columns):
+        fig_raw.add_trace(go.Bar(
+            x=raw_pivot.index.strftime("%Y-%m"), y=raw_pivot[src],
+            name=src, marker_color=colors_src[idx % len(colors_src)],
+        ))
+    fig_raw.update_layout(
+        title=dict(text="多源数据月度接入量", font=dict(size=16, family="Microsoft YaHei"), x=0.5),
+        xaxis_title="月份", yaxis_title="接入量（条）",
+        barmode="group", bargap=0.15, height=440, template="plotly_white",
+        margin=dict(t=80, b=80, l=10, r=10),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02),
+    )
+    st.plotly_chart(fig_raw, use_container_width=True)
+with raw_col2:
+    st.markdown("#### 数据源质量概况")
+    st.dataframe(raw["table_df"], use_container_width=True, hide_index=True)
+
+st.markdown('<hr class="custom-divider">', unsafe_allow_html=True)
+
+# ===== ② 标准化特征资产库统计 =====
+st.markdown("### ② 标准化特征资产库统计")
+feat = ops["feature_assets"]
+make_cards_html(feat["cards"])
+
+asset_fig = create_asset_increment_chart(
+    feat["months"], feat["cum_features"],
+    feat["cum_reusable"], feat["cum_governance"]
+)
+st.plotly_chart(asset_fig, use_container_width=True)
+
+st.markdown('<hr class="custom-divider">', unsafe_allow_html=True)
+
+# ===== ③ 核心数据产品产出统计 =====
+st.markdown("### ③ 核心数据产品产出统计")
+prod = ops["data_products"]
+make_cards_html(prod["cards"], cols_per_row=3)
+
+prod_col1, prod_col2 = st.columns([2, 1])
+with prod_col1:
+    fig_prod = go.Figure()
+    fig_prod.add_trace(go.Bar(
+        x=prod["months"], y=prod["daily"], name="日度产出", marker_color="#2ecc71"
+    ))
+    fig_prod.add_trace(go.Bar(
+        x=prod["months"], y=prod["weekly"], name="周度产出", marker_color="#3498db"
+    ))
+    fig_prod.add_trace(go.Bar(
+        x=prod["months"], y=prod["monthly"], name="月度产出", marker_color="#9b59b6"
+    ))
+    fig_prod.update_layout(
+        title=dict(text="风险指数产出频次分布", font=dict(size=16, family="Microsoft YaHei"), x=0.5),
+        xaxis_title="月份", yaxis_title="产出量（份）",
+        barmode="stack", height=380, template="plotly_white",
+        margin=dict(t=50, b=40, l=10, r=10),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02),
+    )
+    st.plotly_chart(fig_prod, use_container_width=True)
+with prod_col2:
+    st.markdown("#### 产品产出概要")
+    prod_summary = pd.DataFrame({
+        "产出类型": ["日度风险指数", "周度风险指数", "月度风险指数", "地块评级数据集"],
+        "累计产出": [
+            f"{sum(prod['daily'])} 份",
+            f"{sum(prod['weekly'])} 份",
+            f"{sum(prod['monthly'])} 份",
+            "300 地块",
+        ],
+    })
+    st.dataframe(prod_summary, use_container_width=True, hide_index=True)
+
+st.markdown('<hr class="custom-divider">', unsafe_allow_html=True)
+
+# ===== ④ 数据服务调用统计 =====
+st.markdown("### ④ 数据服务调用统计")
+svc = ops["service_calls"]
+make_cards_html(svc["cards"], cols_per_row=3)
+
+svc_fig = create_service_call_chart(
+    svc["months"], svc["warning_calls"],
+    svc["plan_pushes"], svc["insurance_exports"]
+)
+st.plotly_chart(svc_fig, use_container_width=True)
+
+st.markdown('<hr class="custom-divider">', unsafe_allow_html=True)
+
+# ===== ⑤ 数据价值量化看板 =====
+st.markdown("### ⑤ 数据价值量化看板")
+val = ops["value_quant"]
+make_cards_html(val["cards"])
+
+val_fig = go.Figure()
+val_fig.add_trace(go.Scatter(
+    x=val["months"], y=val["cum_savings"], mode="lines+markers",
+    name="累计节约农药成本", line=dict(color="#f1c40f", width=3),
+    fill="tozeroy", fillcolor="rgba(241,196,15,0.12)",
+))
+val_fig.add_trace(go.Scatter(
+    x=val["months"], y=val["cum_loss_reduction"], mode="lines+markers",
+    name="累计减损收益", line=dict(color="#e67e22", width=3),
+    fill="tozeroy", fillcolor="rgba(230,126,34,0.10)",
+))
+val_fig.add_trace(go.Scatter(
+    x=val["months"], y=val["cum_income_increase"], mode="lines+markers",
+    name="亩均增收", line=dict(color="#2ecc71", width=3),
+    fill="tozeroy", fillcolor="rgba(46,204,113,0.08)",
+))
+val_fig.update_layout(
+    title=dict(text="数据价值累计增长曲线", font=dict(size=18, family="Microsoft YaHei"), x=0.5),
+    xaxis_title="月份", yaxis_title="累计金额（万元）",
+    height=420, template="plotly_white",
+    margin=dict(t=50, b=40, l=10, r=10),
+    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+)
+st.plotly_chart(val_fig, use_container_width=True)
+
+st.markdown('<hr class="custom-divider">', unsafe_allow_html=True)
 
 # ==================== 页脚 ====================
 st.markdown('<hr class="custom-divider">', unsafe_allow_html=True)

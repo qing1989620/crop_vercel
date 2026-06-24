@@ -549,7 +549,7 @@ def create_metrics_summary_card(df: pd.DataFrame) -> dict:
     metrics = {}
     if df.empty:
         return metrics
-    
+
     # 找宏平均行
     if "风险等级" in df.columns:
         macro_row = df[df["风险等级"] == "宏平均"]
@@ -559,5 +559,105 @@ def create_metrics_summary_card(df: pd.DataFrame) -> dict:
             metrics["recall"] = row.get("召回率", 0)
             metrics["precision"] = row.get("精确率", 0)
             metrics["samples"] = row.get("样本数", 0)
-    
+
     return metrics
+
+
+# ==================== 数据资产运营中心图表 ====================
+
+def create_data_flow_sankey() -> go.Figure:
+    """数据价值链 Sankey 流转图"""
+    labels = [
+        "气象监测", "土壤传感", "虫情调查", "管护记录",
+        "原始多源<br>数据池",
+        "标准化<br>特征资产库",
+        "核心数据<br>产品",
+        "数据服务<br>接口",
+        "数据价值",
+    ]
+    source = [0, 1, 2, 3, 4, 5, 6, 7]
+    target = [4, 4, 4, 4, 5, 6, 7, 8]
+    value = [520, 380, 410, 290, 1350, 830, 1200, 950]
+
+    node_colors = [
+        "#3498db", "#3498db", "#3498db", "#3498db",
+        "#1abc9c", "#16a085", "#f39c12", "#e67e22", "#e74c3c",
+    ]
+    link_colors = [
+        "rgba(52,152,219,0.25)", "rgba(52,152,219,0.25)",
+        "rgba(52,152,219,0.25)", "rgba(52,152,219,0.25)",
+        "rgba(26,188,156,0.35)", "rgba(22,160,133,0.35)",
+        "rgba(243,156,18,0.35)", "rgba(230,126,34,0.35)",
+    ]
+
+    fig = go.Figure(data=[go.Sankey(
+        node=dict(
+            label=labels, pad=18, thickness=20,
+            color=node_colors,
+        ),
+        link=dict(
+            source=source, target=target, value=value,
+            color=link_colors,
+        ),
+    )])
+    fig.update_layout(
+        title=dict(text="数据价值链流动全景", font=dict(size=18, family="Microsoft YaHei"), x=0.5),
+        height=460,
+        margin=dict(t=50, b=20, l=20, r=20),
+        template="plotly_white",
+    )
+    return fig
+
+
+def create_asset_increment_chart(months: list, cum_features: list,
+                                  cum_reusable: list, cum_governance: list) -> go.Figure:
+    """特征资产累计增长折线图"""
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=months, y=cum_features, mode="lines+markers", name="衍生特征总量",
+        line=dict(color="#2ecc71", width=3), marker=dict(size=6),
+        fill="tozeroy", fillcolor="rgba(46,204,113,0.08)",
+    ))
+    fig.add_trace(go.Scatter(
+        x=months, y=cum_reusable, mode="lines+markers", name="可复用特征字段",
+        line=dict(color="#3498db", width=2, dash="dash"), marker=dict(size=5),
+    ))
+    fig.add_trace(go.Scatter(
+        x=months, y=cum_governance, mode="lines+markers", name="数据治理记录",
+        line=dict(color="#9b59b6", width=2, dash="dot"), marker=dict(size=5),
+    ))
+    fig.update_layout(
+        title=dict(text="特征资产累计增长趋势", font=dict(size=18, family="Microsoft YaHei"), x=0.5),
+        xaxis_title="月份", yaxis_title="累计数量",
+        height=400, template="plotly_white",
+        margin=dict(t=50, b=40, l=10, r=10),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+    )
+    return fig
+
+
+def create_service_call_chart(months: list, warning_calls: list,
+                               plan_pushes: list, insurance_exports: list) -> go.Figure:
+    """数据服务月度调用分组柱状图"""
+    fig = go.Figure()
+    fig.add_trace(go.Bar(
+        x=months, y=warning_calls, name="预警接口调用",
+        marker_color="#e74c3c", marker_line=dict(width=0),
+    ))
+    fig.add_trace(go.Bar(
+        x=months, y=plan_pushes, name="防控方案推送",
+        marker_color="#f39c12", marker_line=dict(width=0),
+    ))
+    fig.add_trace(go.Bar(
+        x=months, y=insurance_exports, name="保险数据导出",
+        marker_color="#3498db", marker_line=dict(width=0),
+    ))
+    fig.update_layout(
+        title=dict(text="数据服务月度调用统计", font=dict(size=18, family="Microsoft YaHei"), x=0.5),
+        xaxis_title="月份", yaxis_title="调用次数",
+        barmode="group", bargap=0.15, bargroupgap=0.1,
+        height=400, template="plotly_white",
+        margin=dict(t=50, b=40, l=10, r=10),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+    )
+    return fig
