@@ -32,11 +32,30 @@ def _find_project_root(base_dir: str) -> str:
     return base_dir  # fallback
 
 PROJECT_ROOT = _find_project_root(_BASE_DIR)
-OUTPUT_DIR = os.path.join(PROJECT_ROOT, "output")
+
+# 数据目录：优先使用 output/（正式模式），若不存在则回退到 demo_data/（演示模式）
+def _get_data_dir() -> str:
+    """自动检测数据目录：output/ → demo_data/ 回退"""
+    for candidate in ["output", "demo_data"]:
+        path = os.path.join(PROJECT_ROOT, candidate)
+        if os.path.exists(path):
+            return candidate
+    return "output"  # fallback
+
+DATA_DIR = _get_data_dir()
+OUTPUT_DIR = os.path.join(PROJECT_ROOT, DATA_DIR)
+
+# 启动时打印数据模式（方便调试）
+import sys as _sys
+_mode_label = "演示模式 (demo_data)" if DATA_DIR == "demo_data" else "正式模式 (output)"
+print(f"[data_loader] 数据目录: {OUTPUT_DIR}  ({_mode_label})", file=_sys.stderr)
 
 
 def _read_csv_safe(relative_path: str, **kwargs) -> pd.DataFrame:
-    """安全读取CSV，自动处理编码问题"""
+    """安全读取CSV，自动处理编码问题；自动适配 output/ 与 demo_data/"""
+    # 如果路径以 output/ 开头但当前数据目录不是 output，自动替换前缀
+    if relative_path.startswith("output/") and DATA_DIR != "output":
+        relative_path = DATA_DIR + "/" + relative_path[len("output/"):]
     full_path = os.path.join(PROJECT_ROOT, relative_path)
     if not os.path.exists(full_path):
         st.error(f"文件不存在: {full_path}")
