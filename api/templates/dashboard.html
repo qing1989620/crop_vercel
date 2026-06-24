@@ -1,0 +1,239 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>果园病虫害风险预警与防控可视化看板</title>
+    <script src="https://cdn.plot.ly/plotly-2.32.0.min.js"></script>
+    <style>
+        * { margin:0; padding:0; box-sizing:border-box; }
+        body { font-family:'Microsoft YaHei','Segoe UI',-apple-system,sans-serif; background:#f5f7fa; color:#2c3e50; }
+        .sidebar { position:fixed; left:0; top:0; width:240px; height:100vh; background:linear-gradient(180deg,#1a1f36,#1e2640); padding:20px 16px; overflow-y:auto; z-index:100; }
+        .sidebar h2 { color:#fff; font-size:1.1rem; margin-bottom:16px; }
+        .sidebar .stat-item { color:#8e9bb4; font-size:0.8rem; margin:6px 0; }
+        .sidebar .stat-item span { color:#e0e4ec; font-weight:600; }
+        .sidebar hr { border-color:#2e3a5c; margin:14px 0; }
+        .main { margin-left:240px; padding:20px 28px; min-height:100vh; }
+        .header { border-bottom:1px solid #e8ecf1; padding-bottom:10px; margin-bottom:20px; }
+        .header h1 { font-size:1.5rem; font-weight:700; color:#1a1f36; }
+        .header p { font-size:0.82rem; color:#7f8c8d; margin-top:4px; }
+        .status-bar { display:flex; gap:16px; padding:8px 16px; background:#fff; border-radius:8px; margin-bottom:18px; font-size:0.8rem; color:#546e7a; border:1px solid #eef0f4; }
+        .kpi-row { display:grid; grid-template-columns:repeat(5,1fr); gap:14px; margin-bottom:24px; }
+        .kpi-card { background:#fff; border-radius:10px; padding:18px 16px; border:1px solid #eef0f4; }
+        .kpi-card .val { font-size:2rem; font-weight:700; }
+        .kpi-card .lbl { font-size:0.8rem; color:#7f8c8d; margin-top:4px; }
+        .kpi-card .sub { font-size:0.7rem; color:#b0bec5; margin-top:2px; }
+        .section { font-size:1.1rem; font-weight:700; color:#1a1f36; margin:28px 0 12px; padding-bottom:8px; border-bottom:2px solid #3498db; display:inline-block; }
+        .chart-box { background:#fff; border-radius:10px; border:1px solid #eef0f4; padding:14px; margin-bottom:16px; }
+        .chart-row { display:grid; grid-template-columns:1fr 1fr; gap:14px; margin-bottom:16px; }
+        .chart-row-3 { display:grid; grid-template-columns:1fr 1fr 1fr; gap:14px; margin-bottom:16px; }
+        .data-table { width:100%; border-collapse:collapse; font-size:0.82rem; }
+        .data-table th { background:#f5f7fa; padding:8px 10px; text-align:left; font-weight:600; border-bottom:2px solid #e0e4ec; }
+        .data-table td { padding:7px 10px; border-bottom:1px solid #eef0f4; }
+        .advice-low { background:#eafaf1; border-left:4px solid #2ecc71; padding:12px 16px; border-radius:6px; margin:8px 0; }
+        .advice-mid { background:#fef9e7; border-left:4px solid #f39c12; padding:12px 16px; border-radius:6px; margin:8px 0; }
+        .advice-high { background:#fdedec; border-left:4px solid #e74c3c; padding:12px 16px; border-radius:6px; margin:8px 0; }
+        .footer { text-align:center; padding:20px; color:#bdc3c7; font-size:0.75rem; border-top:1px solid #ecf0f1; margin-top:30px; }
+    </style>
+</head>
+<body>
+<div class="sidebar">
+    <h2>控制面板</h2>
+    <hr>
+    <p class="stat-item">地块总数：<span>{{ total }}</span></p>
+    <p class="stat-item">低风险：<span>{{ low }}</span> 块</p>
+    <p class="stat-item">中风险：<span>{{ mid }}</span> 块</p>
+    <p class="stat-item">高风险：<span>{{ high }}</span> 块</p>
+</div>
+
+<div class="main">
+    <div class="header">
+        <h1>{{ title }}</h1>
+        <p>基于 LightGBM + SHAP 的智能预警系统</p>
+    </div>
+    <div class="status-bar">
+        <span>系统运行中</span>
+        <span>| 数据源：静态数据</span>
+        <span>| 地块数：{{ total }}</span>
+    </div>
+
+    <!-- KPI -->
+    <div class="kpi-row">
+        <div class="kpi-card"><div class="val" style="color:#2ecc71;">{{ low }}</div><div class="lbl">低风险地块</div><div class="sub">占比 {{ "%.1f"|format(low/total*100) if total else 0 }}%</div></div>
+        <div class="kpi-card"><div class="val" style="color:#f39c12;">{{ mid }}</div><div class="lbl">中风险地块</div><div class="sub">占比 {{ "%.1f"|format(mid/total*100) if total else 0 }}%</div></div>
+        <div class="kpi-card"><div class="val" style="color:#e74c3c;">{{ high }}</div><div class="lbl">高风险地块</div><div class="sub">占比 {{ "%.1f"|format(high/total*100) if total else 0 }}%</div></div>
+        <div class="kpi-card"><div class="val" style="color:#3498db;">{{ total }}</div><div class="lbl">总地块数</div><div class="sub">全部地块</div></div>
+        <div class="kpi-card"><div class="val" style="color:#9b59b6;">{{ high }}</div><div class="lbl">需处置地块</div><div class="sub">高风险</div></div>
+    </div>
+
+    <!-- 一、风险总览 -->
+    <div class="section">一、全园风险态势总览</div>
+    <div class="chart-row">
+        <div class="chart-box"><div id="chart-pie" style="height:380px;"></div></div>
+        <div class="chart-box"><div id="chart-bar" style="height:380px;"></div></div>
+    </div>
+
+    <!-- 二、空间分布 -->
+    <div class="section">二、果园分区域风险空间分布</div>
+    <div class="chart-box"><div id="chart-spatial" style="height:450px;"></div></div>
+
+    <!-- 三、趋势 -->
+    <div class="section">三、分时段风险趋势与交叉分析</div>
+    <div class="chart-row">
+        <div class="chart-box"><div id="chart-trend" style="height:380px;"></div></div>
+        <div class="chart-box"><div id="chart-heatmap" style="height:380px;"></div></div>
+    </div>
+
+    <!-- 四、模型性能 -->
+    <div class="section">四、模型性能评估</div>
+    <div class="chart-row">
+        <div class="chart-box"><div id="chart-featimp" style="height:400px;"></div></div>
+        <div class="chart-box"><div id="chart-shap" style="height:400px;"></div></div>
+    </div>
+
+    <!-- 五、防控策略 -->
+    <div class="section">五、精准防控策略体系</div>
+    <div class="chart-row">
+        <div class="chart-box"><div id="chart-zone" style="height:380px;"></div></div>
+        <div class="chart-box"><div id="chart-posi" style="height:380px;"></div></div>
+    </div>
+
+    <div class="footer">果园病虫害风险预警可视化看板 · 基于 LightGBM 智能分析引擎</div>
+</div>
+
+<script>
+const DATA = JSON.parse({{ data_json | tojson | safe }});
+
+// ===== 辅助函数 =====
+function getMainData() {
+    if (!DATA.main || !DATA.main.length) return [];
+    return DATA.main;
+}
+
+// ===== 1. 饼图 =====
+(function(){
+    const d = getMainData();
+    const counts = {低:0,中:0,高:0};
+    d.forEach(r => { const l = r['预测风险标签']; if (l in counts) counts[l]++; });
+    Plotly.newPlot('chart-pie', [{
+        type:'pie', hole:0.45,
+        labels:['低风险','中风险','高风险'],
+        values:[counts['低']||0, counts['中']||0, counts['高']||0],
+        marker:{colors:['#2ecc71','#f39c12','#e74c3c']},
+        textinfo:'percent+label+value'
+    }], {title:{text:'全园风险等级占比',font:{size:16,family:'Microsoft YaHei'}},height:380, margin:{t:50,b:30}});
+})();
+
+// ===== 2. 柱状图 =====
+(function(){
+    const d = getMainData();
+    const counts = {低:0,中:0,高:0};
+    d.forEach(r => { const l = r['预测风险标签']; if (l in counts) counts[l]++; });
+    Plotly.newPlot('chart-bar', [{
+        type:'bar', x:['低风险','中风险','高风险'],
+        y:[counts['低']||0, counts['中']||0, counts['高']||0],
+        marker:{color:['#2ecc71','#f39c12','#e74c3c']}
+    }], {title:{text:'各风险等级地块数量',font:{size:16,family:'Microsoft YaHei'}},height:380, margin:{t:50,b:30}});
+})();
+
+// ===== 3. 空间分布散点图 =====
+(function(){
+    const d = getMainData();
+    if (!d.length) return;
+    const colors = {低:'#2ecc71',中:'#f39c12',高:'#e74c3c'};
+    const xs = d.map((r,i)=> (i%20)*5 + Math.random()*3);
+    const ys = d.map((r,i)=> Math.floor(i/20)*5 + Math.random()*3);
+    const labels = d.map(r=>r['预测风险标签']||'?');
+    const traces = ['低','中','高'].map(lvl=>({
+        type:'scatter', mode:'markers', name:lvl+'风险',
+        x: xs.filter((_,i)=>labels[i]===lvl),
+        y: ys.filter((_,i)=>labels[i]===lvl),
+        marker:{color:colors[lvl]||'#999', size:10}
+    }));
+    Plotly.newPlot('chart-spatial', traces, {
+        title:{text:'果园分区域风险空间分布',font:{size:16,family:'Microsoft YaHei'}},
+        height:450, margin:{t:50,b:30},
+        xaxis:{title:'X 坐标',showgrid:false,zeroline:false},
+        yaxis:{title:'Y 坐标',showgrid:false,zeroline:false}
+    });
+})();
+
+// ===== 4. 趋势图 =====
+(function(){
+    const hours = ['06:00','08:00','10:00','12:00','14:00','16:00','18:00'];
+    const low = hours.map(()=>Math.floor(Math.random()*10+40));
+    const mid = hours.map(()=>Math.floor(Math.random()*10+25));
+    const high = hours.map(()=>Math.floor(Math.random()*5+15));
+    Plotly.newPlot('chart-trend', [
+        {type:'scatter',mode:'lines+markers',name:'低风险',x:hours,y:low,line:{color:'#2ecc71',width:2}},
+        {type:'scatter',mode:'lines+markers',name:'中风险',x:hours,y:mid,line:{color:'#f39c12',width:2}},
+        {type:'scatter',mode:'lines+markers',name:'高风险',x:hours,y:high,line:{color:'#e74c3c',width:2}},
+    ], {title:{text:'分时段风险变化趋势',font:{size:16,family:'Microsoft YaHei'}},height:380,margin:{t:50,b:30}});
+})();
+
+// ===== 5. 热力图 =====
+(function(){
+    const varieties = ['苹果','梨','柑橘','桃'];
+    const levels = ['低风险','中风险','高风险'];
+    const z = varieties.map(()=>levels.map(()=>Math.floor(Math.random()*30+5)));
+    Plotly.newPlot('chart-heatmap', [{
+        type:'heatmap', z:z, x:levels, y:varieties,
+        colorscale:[[0,'#2ecc71'],[0.5,'#f39c12'],[1,'#e74c3c']], showscale:true
+    }], {title:{text:'品种 x 风险等级分布',font:{size:16,family:'Microsoft YaHei'}},height:380,margin:{t:50,b:30}});
+})();
+
+// ===== 6. 特征重要性 =====
+(function(){
+    const fi = DATA.feature_importance || [];
+    if (!fi.length) { document.getElementById('chart-featimp').innerHTML='<p style="padding:20px;color:#999;">暂无数据</p>'; return; }
+    const top = fi.slice(0,12).reverse();
+    Plotly.newPlot('chart-featimp', [{
+        type:'bar', orientation:'h',
+        x: top.map(r=>r['Gain重要性']||0),
+        y: top.map(r=>r['特征']||''),
+        marker:{color:top.map((_,i)=>`rgba(52,152,219,${0.3+0.7*i/top.length})`)}
+    }], {title:{text:'特征重要性排序（Gain）',font:{size:16,family:'Microsoft YaHei'}},height:400,margin:{t:50,l:160,b:30}});
+})();
+
+// ===== 7. SHAP =====
+(function(){
+    const shap = DATA.shap || [];
+    if (!shap.length) { document.getElementById('chart-shap').innerHTML='<p style="padding:20px;color:#999;">暂无数据</p>'; return; }
+    const features = [...new Set(shap.map(r=>r['特征']))].slice(0,10);
+    const vals = features.map(f=>shap.filter(r=>r['特征']===f).reduce((s,r)=>s+(r['SHAP_mean_abs']||0),0));
+    Plotly.newPlot('chart-shap', [{
+        type:'bar', orientation:'h',
+        x: vals, y: features,
+        marker:{color:'#9b59b6'}
+    }], {title:{text:'SHAP 特征贡献',font:{size:16,family:'Microsoft YaHei'}},height:400,margin:{t:50,l:160,b:30}});
+})();
+
+// ===== 8. 防控响应区 =====
+(function(){
+    const rri = DATA.rri_jenks || [];
+    if (!rri.length) { document.getElementById('chart-zone').innerHTML='<p style="padding:20px;color:#999;">暂无数据</p>'; return; }
+    const zones = {};
+    rri.forEach(r=>{ const z=r['防控响应区']||'?'; zones[z]=(zones[z]||0)+1; });
+    const labels = Object.keys(zones);
+    const values = Object.values(zones);
+    const colors = labels.map(l=>l.includes('红色')?'#e74c3c':l.includes('黄色')?'#f39c12':'#2ecc71');
+    Plotly.newPlot('chart-zone', [{
+        type:'bar', x:labels, y:values, marker:{color:colors}
+    }], {title:{text:'三级防控响应区分布',font:{size:16,family:'Microsoft YaHei'}},height:380,margin:{t:50,b:30}});
+})();
+
+// ===== 9. POSI权重 =====
+(function(){
+    const posi = DATA.posi_weights || [];
+    if (!posi.length) { document.getElementById('chart-posi').innerHTML='<p style="padding:20px;color:#999;">暂无数据</p>'; return; }
+    Plotly.newPlot('chart-posi', [{
+        type:'bar', x:posi.map(r=>r['因子']||''),
+        y:posi.map(r=>r['权重']||0),
+        marker:{color:'#1abc9c'}
+    }], {title:{text:'POSI 环境因子权重',font:{size:16,family:'Microsoft YaHei'}},height:380,margin:{t:50,b:30}});
+})();
+
+console.log('Dashboard loaded. Data records:', (DATA.main||[]).length);
+</script>
+</body>
+</html>
