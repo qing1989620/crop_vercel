@@ -274,6 +274,7 @@ m06_model_explain.render(
     data.get("feature_importance", pd.DataFrame()),
     data.get("shap", pd.DataFrame()),
     data.get("posi_weights", pd.DataFrame()),
+    df_filtered,
 )
 m07_model_performance.render(
     data.get("kpi", pd.DataFrame()),
