@@ -661,3 +661,67 @@ def create_service_call_chart(months: list, warning_calls: list,
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
     )
     return fig
+
+
+def create_raw_data_bar_chart(raw_df) -> go.Figure:
+    """多源数据月度接入量分组柱状图（数据资产运营中心用）"""
+    raw_pivot = raw_df.pivot(index="月份", columns="数据源", values="接入量")
+    fig = go.Figure()
+    colors_src = ["#3498db", "#1abc9c", "#f39c12", "#9b59b6"]
+    for idx, src in enumerate(raw_pivot.columns):
+        fig.add_trace(go.Bar(
+            x=raw_pivot.index.strftime("%Y-%m"), y=raw_pivot[src],
+            name=src, marker_color=colors_src[idx % len(colors_src)],
+        ))
+    fig.update_layout(
+        title=dict(text="多源数据月度接入量", font=dict(size=16, family="Microsoft YaHei"), x=0.5),
+        xaxis_title="月份", yaxis_title="接入量（条）",
+        barmode="group", bargap=0.15, height=440, template="plotly_white",
+        margin=dict(t=80, b=80, l=10, r=10),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02),
+    )
+    return fig
+
+
+def create_product_output_chart(months, daily, weekly, monthly) -> go.Figure:
+    """风险指数产出频次堆叠柱状图（数据资产运营中心用）"""
+    fig = go.Figure()
+    fig.add_trace(go.Bar(x=months, y=daily, name="日度产出", marker_color="#2ecc71"))
+    fig.add_trace(go.Bar(x=months, y=weekly, name="周度产出", marker_color="#3498db"))
+    fig.add_trace(go.Bar(x=months, y=monthly, name="月度产出", marker_color="#9b59b6"))
+    fig.update_layout(
+        title=dict(text="风险指数产出频次分布", font=dict(size=16, family="Microsoft YaHei"), x=0.5),
+        xaxis_title="月份", yaxis_title="产出量（份）",
+        barmode="stack", height=380, template="plotly_white",
+        margin=dict(t=50, b=40, l=10, r=10),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02),
+    )
+    return fig
+
+
+def create_value_growth_chart(months, cum_savings, cum_loss_reduction, cum_income_increase) -> go.Figure:
+    """数据价值累计增长曲线（数据资产运营中心用）"""
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=months, y=cum_savings, mode="lines+markers",
+        name="累计节约农药成本", line=dict(color="#f1c40f", width=3),
+        fill="tozeroy", fillcolor="rgba(241,196,15,0.12)",
+    ))
+    fig.add_trace(go.Scatter(
+        x=months, y=cum_loss_reduction, mode="lines+markers",
+        name="累计减损收益", line=dict(color="#e67e22", width=3),
+        fill="tozeroy", fillcolor="rgba(230,126,34,0.10)",
+    ))
+    fig.add_trace(go.Scatter(
+        x=months, y=cum_income_increase, mode="lines+markers",
+        name="亩均增收", line=dict(color="#2ecc71", width=3),
+        fill="tozeroy", fillcolor="rgba(46,204,113,0.08)",
+    ))
+    fig.update_layout(
+        title=dict(text="数据价值累计增长曲线", font=dict(size=18, family="Microsoft YaHei"), x=0.5),
+        xaxis_title="月份", yaxis_title="累计金额（万元）",
+        height=420, template="plotly_white",
+        margin=dict(t=50, b=40, l=10, r=10),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+    )
+    return fig
