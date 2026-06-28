@@ -77,26 +77,36 @@ crop/
 
 ## 四、环境部署
 
-### 4.1 环境要求
-- Python 3.10 ~ 3.12
-- Windows / macOS / Linux
-
-### 4.2 快速启动
+### 4.1 本地开发 (Streamlit)
 
 ```bash
-# 1. 克隆项目
 cd crop
-
-# 2. 安装依赖（推荐使用虚拟环境）
-pip install -r requirements.txt
-
-# 3. 启动看板
+pip install streamlit plotly pandas numpy lightgbm shap openpyxl
 streamlit run app.py
-
-# 4. 浏览器自动打开 http://localhost:8501
+# → http://localhost:8501
 ```
 
-### 4.3 演示模式（无原始数据时使用）
+### 4.2 Vercel 生产部署 (FastAPI + Plotly.js)
+
+项目已完全适配 Vercel Serverless 部署：
+
+```bash
+# 1. 安装 Vercel CLI
+npm i -g vercel
+
+# 2. 部署
+cd crop
+vercel
+
+# 3. 生产环境自动使用 api/index.py (FastAPI)
+```
+
+**Vercel 架构：**
+- `api/index.py` → FastAPI 后端（数据加载 + AI 聊天代理）
+- `api/templates/dashboard.html` → 纯 HTML/CSS/JS 前端（Plotly.js 图表）
+- `vercel.json` → Vercel 路由配置
+- 无需 `.streamlit/` 目录（仅用于本地 Streamlit 开发）
+- API Key 仅在后端使用，前端不可见
 
 项目内置 `demo_data/` 脱敏示范数据集，评委可离线直接运行。代码自动检测 `output/` 目录是否存在，若缺失则回退到 `demo_data/`。
 
