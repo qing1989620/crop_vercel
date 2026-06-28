@@ -57,7 +57,10 @@ async def api_data():
 @app.post("/api/upload")
 async def api_upload(file: UploadFile = File(...)):
     """上传 CSV 数据集"""
-    from api.process import save_uploaded_csv, validate_csv
+    try:
+        from api.process import save_uploaded_csv, validate_csv
+    except ImportError:
+        return JSONResponse({"success": False, "error": "上传功能需要本地环境（需 scikit-learn 等依赖）"})
     content = await file.read()
     filepath = save_uploaded_csv(content, file.filename or "data.csv")
     validation = validate_csv(filepath)
@@ -71,7 +74,10 @@ async def api_upload(file: UploadFile = File(...)):
 @app.post("/api/process")
 async def api_process(request: Request):
     """触发数据处理管线"""
-    from api.process import run_full_pipeline, UPLOAD_DIR
+    try:
+        from api.process import run_full_pipeline, UPLOAD_DIR
+    except ImportError:
+        return JSONResponse({"success": False, "error": "算法管线需要本地环境（需 lightgbm/scikit-learn 等依赖）。Vercel 环境不支持长时间训练任务。"})
     try:
         body = await request.json()
         filename = body.get("filename", "data.csv")
