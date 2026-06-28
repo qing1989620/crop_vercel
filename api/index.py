@@ -3,7 +3,7 @@
 import os, sys, json, traceback
 
 from fastapi import FastAPI, Request
-from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 
 app = FastAPI(title="果园病虫害风险预警看板")
@@ -218,5 +218,5 @@ async def api_chat(request: Request):
 
 
 @app.post("/api/upload")
-async def api_upload(file: UploadFile = None):
+async def api_upload(request: Request):
     return JSONResponse({"success": False, "error": "上传功能需本地环境，Vercel不支持长时间处理"})
