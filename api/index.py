@@ -17,6 +17,11 @@ app = FastAPI(title="果园病虫害风险预警看板")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 
+@app.get("/api/health")
+async def health():
+    return JSONResponse({"status": "ok", "python": sys.version})
+
+
 # ==================== 数据加载 ====================
 def _read_csv(path: str) -> pd.DataFrame:
     full = os.path.join(BASE_DIR, path) if not os.path.isabs(path) else path
@@ -92,16 +97,19 @@ async def api_process(request: Request):
 
 @app.get("/api/charts")
 async def api_charts():
-    """后端生成 Plotly JSON — 与 Streamlit 使用同一套 charts.py"""
-    import plotly.io as pio
-    import plotly.graph_objects as go
-    from utils.charts import (
-        create_risk_pie_chart, create_risk_bar_chart,
-        create_spatial_risk_map, create_time_trend_chart,
-        create_risk_heatmap, create_response_zone_chart,
-        create_posi_weight_chart, create_feature_importance_chart,
-        create_shap_chart, create_data_flow_sankey,
-    )
+    """后端生成 Plotly JSON"""
+    try:
+        import plotly.io as pio
+        import plotly.graph_objects as go
+        from utils.charts import (
+            create_risk_pie_chart, create_risk_bar_chart,
+            create_spatial_risk_map, create_time_trend_chart,
+            create_risk_heatmap, create_response_zone_chart,
+            create_posi_weight_chart, create_feature_importance_chart,
+            create_shap_chart, create_data_flow_sankey,
+        )
+    except Exception as e:
+        return JSONResponse({"success": False, "error": f"导入失败: {str(e)}"})
     data = load_all_data()
     main_list = data.get("main", [])
     df_main = pd.DataFrame(main_list) if main_list else pd.DataFrame()
@@ -173,14 +181,17 @@ async def api_chat(request: Request):
 
 @app.get("/", response_class=HTMLResponse)
 async def dashboard(request: Request):
-    data = load_all_data()
-    df_main = _read_csv("output/3.分区域分时段/tables/00_全量地块风险概率与标签.csv")
-    stats = {"total": len(df_main), "low": 0, "mid": 0, "high": 0}
-    if not df_main.empty and "预测风险标签" in df_main.columns:
-        vc = df_main["预测风险标签"].value_counts().to_dict()
-        stats["low"] = int(vc.get("低",0)); stats["mid"] = int(vc.get("中",0)); stats["high"] = int(vc.get("高",0))
-    data_json = json.dumps(data, ensure_ascii=False, default=str)
-    return HTMLResponse(content=jinja_env.get_template("dashboard.html").render(
-        request=request, data_json=data_json, total=stats["total"],
-        low=stats["low"], mid=stats["mid"], high=stats["high"],
-        title="果园病虫害风险预警与防控可视化看板"))
+    try:
+        data = load_all_data()
+        df_main = _read_csv("output/3.分区域分时段/tables/00_全量地块风险概率与标签.csv")
+        stats = {"total": len(df_main), "low": 0, "mid": 0, "high": 0}
+        if not df_main.empty and "预测风险标签" in df_main.columns:
+            vc = df_main["预测风险标签"].value_counts().to_dict()
+            stats["low"] = int(vc.get("低",0)); stats["mid"] = int(vc.get("中",0)); stats["high"] = int(vc.get("高",0))
+        data_json = json.dumps(data, ensure_ascii=False, default=str)
+        return HTMLResponse(content=jinja_env.get_template("dashboard.html").render(
+            request=request, data_json=data_json, total=stats["total"],
+            low=stats["low"], mid=stats["mid"], high=stats["high"],
+            title="果园病虫害风险预警与防控可视化看板"))
+    except Exception as e:
+        return HTMLResponse(content=f"<h1>500 Error</h1><pre>{str(e)}</pre>", status_code=500)
