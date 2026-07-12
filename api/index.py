@@ -1,9 +1,9 @@
 # -*- coding: utf-8 -*-
 """果园病虫害风险预警可视化看板 — Vercel 部署版"""
-import os, sys, json, traceback
+import os, sys, json, traceback, hashlib, hmac, time
 
-from fastapi import FastAPI, Request
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi import FastAPI, Request, Response
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.middleware.cors import CORSMiddleware
 
 app = FastAPI(title="果园病虫害风险预警看板")
@@ -11,6 +11,61 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], all
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, BASE_DIR)
+
+# ── 管理员唯一通行秘钥（生产环境请通过环境变量 ADMIN_KEY 配置）──
+ADMIN_KEY = os.environ.get("ADMIN_KEY", "crop2026")
+COOKIE_NAME = "orchard_auth"
+COOKIE_SECRET = os.environ.get("COOKIE_SECRET", "a7f3c9e1b2d4580f6e3a9127c5b0d84e")
+
+
+def _make_token(key: str) -> str:
+    """基于秘钥 + 时间戳生成 HMAC 令牌"""
+    ts = str(int(time.time() // 1800))  # 30分钟窗口
+    raw = f"{key}:{ts}"
+    return hmac.new(COOKIE_SECRET.encode(), raw.encode(), hashlib.sha256).hexdigest()[:32]
+
+
+def _verify_auth(request: Request) -> bool:
+    """验证请求是否携带有效认证 Cookie"""
+    token = request.cookies.get(COOKIE_NAME)
+    if not token:
+        return False
+    expected = _make_token(ADMIN_KEY)
+    return hmac.compare_digest(token, expected)
+
+
+@app.get("/login")
+async def login_page(request: Request):
+    """管理员登录页"""
+    from jinja2 import Environment, FileSystemLoader
+    TEMPLATE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "templates")
+    jinja_env = Environment(loader=FileSystemLoader(TEMPLATE_DIR))
+    return HTMLResponse(content=jinja_env.get_template("login.html").render(request=request))
+
+
+@app.post("/api/auth")
+async def api_auth(request: Request):
+    """验证管理员秘钥"""
+    try:
+        body = await request.json()
+        submitted_key = body.get("key", "")
+    except Exception:
+        return JSONResponse({"success": False, "error": "请求格式错误"})
+
+    if submitted_key == ADMIN_KEY:
+        token = _make_token(ADMIN_KEY)
+        resp = JSONResponse({"success": True})
+        resp.set_cookie(
+            key=COOKIE_NAME,
+            value=token,
+            max_age=86400,          # 24 小时有效
+            httponly=True,
+            samesite="lax",
+            secure=False,            # 本地开发关闭；生产请开启
+        )
+        return resp
+    else:
+        return JSONResponse({"success": False, "error": "访问秘钥错误"})
 
 
 @app.get("/api/health")
@@ -20,6 +75,10 @@ async def health():
 
 @app.get("/")
 async def home(request: Request):
+    # 认证检查
+    if not _verify_auth(request):
+        return RedirectResponse(url="/login", status_code=302)
+
     try:
         # 延迟导入，避免启动时崩溃
         import pandas as pd
@@ -66,7 +125,9 @@ async def home(request: Request):
 
 
 @app.get("/api/data")
-async def api_data():
+async def api_data(request: Request):
+    if not _verify_auth(request):
+        return JSONResponse({"success": False, "error": "未授权访问"}, status_code=401)
     try:
         import pandas as pd
 
@@ -104,7 +165,9 @@ async def api_data():
 
 
 @app.get("/api/charts")
-async def api_charts():
+async def api_charts(request: Request):
+    if not _verify_auth(request):
+        return JSONResponse({"success": False, "error": "未授权访问"}, status_code=401)
     try:
         import pandas as pd
         import plotly.io as pio
@@ -186,6 +249,8 @@ async def api_charts():
 
 @app.post("/api/chat")
 async def api_chat(request: Request):
+    if not _verify_auth(request):
+        return JSONResponse({"reply": "请先登录后再使用AI助手"})
     try:
         import requests as req
         body = await request.json()
@@ -197,7 +262,7 @@ async def api_chat(request: Request):
         resp = req.post(
             "https://api.deepseek.com/v1/chat/completions",
             headers={
-                "Authorization": "Bearer sk-21d56d39ab7b430ea403c34edfc80b49",
+                "Authorization": "Bearer sk-62ad07704cc24a7d842d34f835708fb5",
                 "Content-Type": "application/json",
             },
             json={
@@ -219,4 +284,14 @@ async def api_chat(request: Request):
 
 @app.post("/api/upload")
 async def api_upload(request: Request):
+    if not _verify_auth(request):
+        return JSONResponse({"success": False, "error": "未授权访问"}, status_code=401)
     return JSONResponse({"success": False, "error": "上传功能需本地环境，Vercel不支持长时间处理"})
+
+
+@app.get("/logout")
+async def logout():
+    """退出登录，清除认证 Cookie"""
+    resp = RedirectResponse(url="/login", status_code=302)
+    resp.delete_cookie(COOKIE_NAME)
+    return resp

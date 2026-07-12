@@ -84,8 +84,8 @@ body{font-family:'Microsoft YaHei','Segoe UI',-apple-system,sans-serif;backgroun
         <p style="margin:4px 0 2px">果树品种</p>
         <select id="filter-variety" onchange="applyFilters()"><option value="全部">全部</option></select>
         <p style="margin:8px 0 2px">风险等级</p>
-        <select id="filter-risk" onchange="applyFilters()" multiple size="3" style="height:64px">
-            <option value="低风险" selected>低风险</option><option value="中风险" selected>中风险</option><option value="高风险" selected>高风险</option>
+        <select id="filter-risk" onchange="handleRiskChange()" multiple size="4" style="height:82px">
+            <option value="全部">全部</option><option value="低风险" selected>低风险</option><option value="中风险" selected>中风险</option><option value="高风险" selected>高风险</option>
         </select>
         <p style="margin:8px 0 2px">病虫害类型</p>
         <select id="filter-pest" onchange="applyFilters()"><option value="全部">全部</option></select>
@@ -111,6 +111,9 @@ body{font-family:'Microsoft YaHei','Segoe UI',-apple-system,sans-serif;backgroun
         <p class="stat-item">中风险：<span id="sm" style="color:#F59E0B">-</span> 块</p>
         <p class="stat-item">高风险：<span id="sh" style="color:#EF4444">-</span> 块</p>
         <p class="stat-item" style="margin-top:6px">页面加载：<span id="loadtime">-</span></p>
+    </div>
+    <div class="sidebar-section" style="text-align:center;padding:10px 14px">
+        <a href="/logout" style="color:#f87171;font-size:.78rem;text-decoration:none;font-weight:500">退出登录</a>
     </div>
 </div>
 
@@ -218,7 +221,7 @@ function populateFilters(){
 function gm(){
     let d=[..._raw];
     const v=document.getElementById('filter-variety').value;
-    const rs=Array.from(document.getElementById('filter-risk').selectedOptions).map(o=>o.value);
+    const rs=Array.from(document.getElementById('filter-risk').selectedOptions).map(o=>o.value).filter(v=>v!=='全部');
     const p=document.getElementById('filter-pest').value;
     if(v!=='全部')d=d.filter(r=>r['果树品种']===v);
     if(p!=='全部')d=d.filter(r=>String(r['病虫害类型'])===p);
@@ -226,6 +229,19 @@ function gm(){
     return d;
 }
 
+function handleRiskChange(){
+    const sel=document.getElementById('filter-risk');
+    const opts=Array.from(sel.options);
+    const allOpt=opts.find(o=>o.value==='全部');
+    const riskOpts=opts.filter(o=>o.value!=='全部');
+    const allSelected=allOpt.selected;
+    if(allSelected){
+        // "全部"被选中：自动选中所有风险等级，取消"全部"
+        riskOpts.forEach(o=>o.selected=true);
+        allOpt.selected=false;
+    }
+    applyFilters();
+}
 function applyFilters(){renderAll();}
 
 // ========== 渲染后端预生成的 Plotly 图表（与 Streamlit 完全一致）==========
