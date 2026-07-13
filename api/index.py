@@ -26,12 +26,18 @@ def _make_token(key: str) -> str:
 
 
 def _verify_auth(request: Request) -> bool:
-    """验证请求是否携带有效认证 Cookie"""
+    """验证请求是否携带有效认证 Cookie（容忍窗口边界 ±1）"""
     token = request.cookies.get(COOKIE_NAME)
     if not token:
         return False
-    expected = _make_token(ADMIN_KEY)
-    return hmac.compare_digest(token, expected)
+    # 同时接受当前窗口和上一个窗口的 token，避免窗口切换瞬间 401
+    now = int(time.time() // 1800)
+    for ts in (now, now - 1):
+        raw = f"{ADMIN_KEY}:{ts}"
+        expected = hmac.new(COOKIE_SECRET.encode(), raw.encode(), hashlib.sha256).hexdigest()[:32]
+        if hmac.compare_digest(token, expected):
+            return True
+    return False
 
 
 # ── AI 对话历史缓存（服务端内存存储，按会话隔离）──
@@ -39,14 +45,14 @@ _chat_history: dict[str, list[dict]] = {}
 _chat_history_ts: dict[str, float] = {}   # 会话最后活跃时间
 
 # ── Token 省钱策略：各项收紧参数 ──
-MAX_HISTORY_MESSAGES = 10     # 最多 10 条消息（5 轮 × 2），从 20 砍半
+MAX_HISTORY_MESSAGES = 10     # 最多 10 条消息（5 轮 × 2）
 MAX_RETRIES = 0               # 不重试，400 错误重试纯浪费钱
-MAX_TOKENS_OUTPUT = 400       # 回复上限 400 token，从 800 砍半（问答够用）
-MAX_INPUT_TOKENS = 1200       # ★新增★ 输入 token 上限（这才是烧钱大头）
-MAX_USER_MSG_CHARS = 500      # ★新增★ 单条用户消息最多 500 字符
-MAX_USER_MSG_PER_MIN = 6      # ★新增★ 每分钟最多 6 次请求
-HISTORY_TTL_SEC = 1800        # ★新增★ 30 分钟无活动清历史（防累积烧钱）
-CACHE_TTL_SEC = 300           # ★新增★ 相同问题缓存 5 分钟
+MAX_TOKENS_OUTPUT = 600       # 回复上限 600 token（数据引用需更多空间）
+MAX_INPUT_TOKENS = 2000       # 输入 token 上限（含数据目录+预览+历史）
+MAX_USER_MSG_CHARS = 800      # 单条用户消息最多 800 字符（数据分析问题稍长）
+MAX_USER_MSG_PER_MIN = 6      # 每分钟最多 6 次请求
+HISTORY_TTL_SEC = 1800        # 30 分钟无活动清历史
+CACHE_TTL_SEC = 300           # 相同问题缓存 5 分钟
 
 
 # ── 请求频率限制 ──
@@ -207,6 +213,225 @@ def _cleanup_stale_histories():
         _chat_history_ts.pop(sid, None)
         _rate_limiter.pop(sid, None)
 
+
+# ═══════════════════════════════════════════════════════════
+# 数据感知系统 — Tina 基于真实 CSV 数据回答，而非凭空捏造
+# ═══════════════════════════════════════════════════════════
+
+OUTPUT_DIR = os.path.join(BASE_DIR, "output")
+DATA_PROCESS_DIR = os.path.join(BASE_DIR, "data_process")
+
+# 数据目录缓存（启动后首次请求时构建，之后复用）
+_data_catalog_cache: dict | None = None
+_data_catalog_ts: float = 0.0
+CATALOG_REFRESH_SEC = 300  # 5 分钟刷新一次目录（文件可能被管线更新）
+
+# 关键词 → CSV 文件映射（用于智能匹配用户问题到对应数据）
+_KEYWORD_FILE_MAP = {
+    # 全量地块数据
+    "地块": "3.分区域分时段/tables/00_全量地块风险概率与标签.csv",
+    "风险概率": "3.分区域分时段/tables/00_全量地块风险概率与标签.csv",
+    "风险标签": "3.分区域分时段/tables/00_全量地块风险概率与标签.csv",
+    "列表": "3.分区域分时段/tables/00_全量地块风险概率与标签.csv",
+    # POSI / 防治窗口
+    "posi": "3.分区域分时段/tables/02_地块POSI与窗口判定.csv",
+    "防治窗口": "3.分区域分时段/tables/02_地块POSI与窗口判定.csv",
+    "窗口": "3.分区域分时段/tables/02_地块POSI与窗口判定.csv",
+    "youden": "3.分区域分时段/tables/03_POSI阈值Youden标定曲线.csv",
+    "阈值": "3.分区域分时段/tables/03_POSI阈值Youden标定曲线.csv",
+    # 区域风险
+    "区域": "3.分区域分时段/tables/01_RRI区域风险指数与Jenks分区.csv",
+    "rri": "3.分区域分时段/tables/01_RRI区域风险指数与Jenks分区.csv",
+    "jenks": "3.分区域分时段/tables/01_RRI区域风险指数与Jenks分区.csv",
+    "响应区": "3.分区域分时段/tables/06_防控响应区汇总统计.csv",
+    "防控响应": "3.分区域分时段/tables/06_防控响应区汇总统计.csv",
+    # 防控方案
+    "方案": "3.分区域分时段/tables/05_防控单元精准方案推荐.csv",
+    "推荐": "3.分区域分时段/tables/05_防控单元精准方案推荐.csv",
+    "农药": "3.分区域分时段/tables/05_防控单元精准方案推荐.csv",
+    "施药": "3.分区域分时段/tables/05_防控单元精准方案推荐.csv",
+    # 权重
+    "权重": "3.分区域分时段/tables/08_POSI因子权重.csv",
+    "因子": "3.分区域分时段/tables/08_POSI因子权重.csv",
+    # 帕累托
+    "帕累托": "3.分区域分时段/tables/04_帕累托前沿_减药增效权衡.csv",
+    "减药": "3.分区域分时段/tables/04_帕累托前沿_减药增效权衡.csv",
+    "增效": "3.分区域分时段/tables/04_帕累托前沿_减药增效权衡.csv",
+    # 模型性能
+    "模型": "2.低中高/tables/核心KPI指标.csv",
+    "准确": "2.低中高/tables/核心KPI指标.csv",
+    "kpi": "2.低中高/tables/核心KPI指标.csv",
+    "f1": "2.低中高/tables/核心KPI指标.csv",
+    "auc": "2.低中高/tables/ROC_AUC值.csv",
+    "roc": "2.低中高/tables/ROC_AUC值.csv",
+    # 特征重要性 / SHAP
+    "特征重要性": "2.低中高/tables/特征重要性.csv",
+    "shap": "2.低中高/tables/SHAP特征贡献.csv",
+    "特征贡献": "2.低中高/tables/SHAP特征贡献.csv",
+    "可解释": "2.低中高/tables/SHAP特征贡献.csv",
+    # 分类报告
+    "混淆矩阵": "2.低中高/tables/混淆矩阵.csv",
+    "分类报告": "2.低中高/tables/测试集分类报告.csv",
+    "交叉验证": "2.低中高/tables/CV_五折交叉验证.csv",
+    "cv": "2.低中高/tables/CV_五折交叉验证.csv",
+    # 策略体系
+    "策略": "3.分区域分时段/tables/表3-5_三级差异化防控策略体系.csv",
+    "防控策略": "3.分区域分时段/tables/表3-5_三级差异化防控策略体系.csv",
+    "差异化": "3.分区域分时段/tables/表3-5_三级差异化防控策略体系.csv",
+    "三级": "3.分区域分时段/tables/表3-1_三级防控响应区汇总.csv",
+    # 超参数
+    "超参数": "2.低中高/tables/模型超参数.csv",
+    "lightgbm": "2.低中高/tables/模型超参数.csv",
+    # 交叉统计
+    "交叉统计": "3.分区域分时段/tables/表3-4_风险等级与防治窗口交叉统计.csv",
+    "交叉": "3.分区域分时段/tables/表3-4_风险等级与防治窗口交叉统计.csv",
+    # 地块详情
+    "详情": "3.分区域分时段/tables/07_地块级详情_前50.csv",
+    "地块级": "3.分区域分时段/tables/07_地块级详情_前50.csv",
+    # 基线特征
+    "基线": "1.预处理及特征工程结果/09_基线模型_特征重要性量化报表.csv",
+}
+
+
+def _build_data_catalog() -> dict:
+    """扫描 output 目录，构建数据目录（带缓存）"""
+    global _data_catalog_cache, _data_catalog_ts
+    now = time.time()
+    if _data_catalog_cache is not None and (now - _data_catalog_ts) < CATALOG_REFRESH_SEC:
+        return _data_catalog_cache
+
+    import pandas as pd
+    catalog: dict[str, dict] = {}
+    for root, dirs, files in os.walk(OUTPUT_DIR):
+        for f in files:
+            if not f.endswith('.csv'):
+                continue
+            full = os.path.join(root, f)
+            rel = os.path.relpath(full, OUTPUT_DIR).replace('\\', '/')
+            try:
+                df = pd.read_csv(full, encoding='utf-8-sig', nrows=5)
+            except Exception:
+                try:
+                    df = pd.read_csv(full, encoding='gbk', nrows=5)
+                except Exception:
+                    continue
+            # 总行数
+            try:
+                total_rows = len(pd.read_csv(full, encoding='utf-8-sig'))
+            except Exception:
+                total_rows = len(df)
+            catalog[rel] = {
+                "path": full,
+                "columns": list(df.columns),
+                "rows": total_rows,
+            }
+    _data_catalog_cache = catalog
+    _data_catalog_ts = now
+    return catalog
+
+
+def _build_catalog_text(catalog: dict) -> str:
+    """将数据目录转成给 AI 看的简洁文本"""
+    lines = ["【可用数据集清单】"]
+    for rel, info in sorted(catalog.items()):
+        cols = ", ".join(info["columns"][:8])
+        more = f"…等{len(info['columns'])}列" if len(info['columns']) > 8 else ""
+        lines.append(f"  • {rel}  ({info['rows']}行, 列: {cols}{more})")
+    return "\n".join(lines)
+
+
+def _match_data_files(query: str, catalog: dict) -> list[str]:
+    """根据用户问题关键词匹配相关 CSV 文件路径"""
+    qlower = query.lower()
+    matched = set()
+    for kw, rel_path in _KEYWORD_FILE_MAP.items():
+        if kw.lower() in qlower and rel_path in catalog:
+            matched.add(rel_path)
+    return list(matched)
+
+
+def _load_csv_preview(filepath: str, max_rows: int = 10, max_chars: int = 600) -> str:
+    """加载 CSV 文件并生成预览文本（限制行数和字符数）"""
+    import pandas as pd
+    try:
+        df = pd.read_csv(filepath, encoding='utf-8-sig', nrows=max_rows)
+    except Exception:
+        try:
+            df = pd.read_csv(filepath, encoding='gbk', nrows=max_rows)
+        except Exception:
+            return ""
+    if df.empty:
+        return ""
+
+    # 生成简洁表格
+    cols = list(df.columns)
+    header = "| " + " | ".join(cols[:8]) + " |"
+    sep = "|" + "|".join(["---" for _ in range(min(len(cols), 8) + 1)]) + "|"
+
+    rows_text = []
+    total_chars = len(header) + len(sep)
+    for _, row in df.iterrows():
+        vals = [str(v)[:30] for v in row[:8]]
+        line = "| " + " | ".join(vals) + " |"
+        if total_chars + len(line) > max_chars:
+            break
+        rows_text.append(line)
+        total_chars += len(line)
+
+    return "\n".join([header, sep] + rows_text)
+
+
+def _build_data_context(query: str) -> tuple[str, str]:
+    """构建数据上下文。返回 (catalog_text, data_text)。
+    catalog_text: 始终返回的数据目录
+    data_text: 匹配到的相关数据内容
+    """
+    catalog = _build_data_catalog()
+    catalog_text = _build_catalog_text(catalog)
+
+    # 匹配相关文件
+    matched = _match_data_files(query, catalog)
+    if not matched:
+        # 没有匹配 → 返回全量地块摘要（最核心的数据）
+        matched = ["3.分区域分时段/tables/00_全量地块风险概率与标签.csv"]
+
+    # 加载匹配文件预览
+    parts = []
+    for rel in matched[:3]:  # 最多 3 个文件
+        info = catalog[rel]
+        preview = _load_csv_preview(info["path"])
+        if preview:
+            label = os.path.basename(rel).replace('.csv', '')
+            parts.append(f"【{label}】({info['rows']}行)\n{preview}")
+
+    data_text = "\n\n".join(parts) if parts else ""
+    return catalog_text, data_text
+
+
+def _build_system_prompt(query: str) -> str:
+    """构建包含数据上下文的 system prompt"""
+    catalog_text, data_text = _build_data_context(query)
+
+    base = (
+        "你是Tina，智慧果园病虫害防控AI助手。"
+        "你拥有系统后台的真实数据访问权限，所有分析必须基于提供的实际数据，"
+        "严禁凭空捏造数字或要求用户提供数据。"
+        "回答时引用具体数值、地块ID和统计结果。"
+        "中文回答，简洁专业，控制在200字以内。"
+    )
+
+    prompt = f"{base}\n\n{catalog_text}"
+    if data_text:
+        # 估算数据部分 token，控制总量
+        est = _estimate_tokens(prompt) + _estimate_tokens(data_text) + 50
+        if est < MAX_INPUT_TOKENS - 100:
+            prompt += f"\n\n【相关数据预览】\n{data_text}"
+        else:
+            # 压缩数据
+            short = data_text[:600] + "\n…(数据过长已截断)"
+            prompt += f"\n\n【相关数据预览】\n{short}"
+
+    return prompt
 
 @app.get("/login")
 async def login_page(request: Request):
@@ -455,15 +680,24 @@ async def api_chat(request: Request):
         _chat_history_ts[session_id] = time.time()
         return JSONResponse({"reply": cached, "cached": True})
 
+    # ── 构建数据感知的 System Prompt ──
+    data_system_prompt = _build_system_prompt(user_msg)
+
     # ── 构建消息 ──
     if client_history and isinstance(client_history, list):
         history = client_history[-MAX_HISTORY_MESSAGES:]
-        messages = [{
-            "role": "system",
-            "content": "你是Tina，智慧果园病虫害AI助手。中文回答，简洁专业。"
-        }] + history + [{"role": "user", "content": user_msg}]
+        messages = [{"role": "system", "content": data_system_prompt}] + history + [{"role": "user", "content": user_msg}]
     else:
-        messages = _build_messages(session_id, user_msg)
+        # 服务端历史模式：也注入数据上下文
+        history = _chat_history.get(session_id, [])
+        history.append({"role": "user", "content": user_msg})
+        if len(history) > MAX_HISTORY_MESSAGES:
+            summary = _summarize_history(history)
+            if summary:
+                history = [{"role": "system", "content": summary}] + history[-6:]
+            else:
+                history = history[-MAX_HISTORY_MESSAGES:]
+        messages = [{"role": "system", "content": data_system_prompt}] + history
 
     # ★ 最终 token 预算裁剪
     if _estimate_messages_tokens(messages) > MAX_INPUT_TOKENS:

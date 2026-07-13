@@ -401,7 +401,43 @@ function renderPlotDetail(){
 function toggleAI(){document.getElementById('drawer').classList.toggle('active');document.getElementById('overlay').classList.toggle('active');document.getElementById('fab').style.opacity=document.getElementById('drawer').classList.contains('active')?'0':'1';if(document.getElementById('drawer').classList.contains('active'))setTimeout(()=>document.getElementById('ainp')?.focus(),350);}
 function closeAI(){document.getElementById('drawer').classList.remove('active');document.getElementById('overlay').classList.remove('active');document.getElementById('fab').style.opacity='1';}
 let chatHistory=[];
-function addMsg(role,content){const e=document.getElementById('empty');if(e)e.style.display='none';const d=document.createElement('div');d.className='ai-msg '+(role==='user'?'ai-msg-user':'ai-msg-assistant');d.textContent=content;document.getElementById('msgs').appendChild(d);document.getElementById('msgs').scrollTop=document.getElementById('msgs').scrollHeight;}
+function renderMD(text){
+    // 转义 HTML
+    let h=text.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    // 行内代码 `code`
+    h=h.replace(/`([^`]+)`/g,'<code style="background:#334155;padding:1px 5px;border-radius:3px;font-size:.8rem">$1</code>');
+    // 粗体 **text**
+    h=h.replace(/\*\*(.+?)\*\*/g,'<strong>$1</strong>');
+    // 斜体 *text*
+    h=h.replace(/\*(.+?)\*/g,'<em>$1</em>');
+    // 处理列表和段落
+    const lines=h.split('\n');
+    let out='',inUl=false,inOl=false;
+    for(let i=0;i<lines.length;i++){
+        const l=lines[i].trim();
+        if(!l){out+='<br>';if(inUl){out+='</ul>';inUl=false;}if(inOl){out+='</ol>';inOl=false;}continue;}
+        // 无序列表
+        if(/^[-*•]\s/.test(l)){
+            if(!inUl){if(inOl){out+='</ol>';inOl=false;}out+='<ul style="margin:4px 0;padding-left:18px">';inUl=true;}
+            out+='<li>'+l.replace(/^[-*•]\s+/,'')+'</li>';
+            continue;
+        }
+        // 有序列表
+        if(/^\d+[.、]\s/.test(l)){
+            if(!inOl){if(inUl){out+='</ul>';inUl=false;}out+='<ol style="margin:4px 0;padding-left:18px">';inOl=true;}
+            out+='<li>'+l.replace(/^\d+[.、]\s+/,'')+'</li>';
+            continue;
+        }
+        // 普通段落
+        if(inUl){out+='</ul>';inUl=false;}
+        if(inOl){out+='</ol>';inOl=false;}
+        out+='<p style="margin:2px 0">'+l+'</p>';
+    }
+    if(inUl)out+='</ul>';
+    if(inOl)out+='</ol>';
+    return out;
+}
+function addMsg(role,content){const e=document.getElementById('empty');if(e)e.style.display='none';const d=document.createElement('div');d.className='ai-msg '+(role==='user'?'ai-msg-user':'ai-msg-assistant');d.innerHTML=role==='user'?content.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'):renderMD(content);document.getElementById('msgs').appendChild(d);document.getElementById('msgs').scrollTop=document.getElementById('msgs').scrollHeight;}
 async function sendAI(){if(busy)return;const inp=document.getElementById('ainp'),btn=document.getElementById('abtn'),t=inp.value.trim();if(!t)return;addMsg('user',t);inp.value='';busy=true;btn.disabled=true;btn.textContent='思考中...';try{const r=await fetch('/api/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message:t,history:chatHistory.slice(-20),session_id:'dashboard'})});const j=await r.json();const reply=j.reply||'（AI未返回内容）';addMsg('assistant',reply);chatHistory.push({role:'user',content:t},{role:'assistant',content:reply});if(chatHistory.length>20)chatHistory=chatHistory.slice(-20);}catch(e){addMsg('assistant','请求失败：'+e.message);}finally{busy=false;btn.disabled=false;btn.textContent='发送';inp.focus();}}
 
 // ========== 自动刷新 ==========
