@@ -35,68 +35,177 @@ def _verify_auth(request: Request) -> bool:
 
 
 # ── AI 对话历史缓存（服务端内存存储，按会话隔离）──
-# 结构: { session_id: [{"role":"user","content":"..."}, ...] }
 _chat_history: dict[str, list[dict]] = {}
-MAX_HISTORY_ROUNDS = 10       # 最多保留 10 轮对话
-MAX_HISTORY_MESSAGES = 20     # 最多 20 条消息（10 轮 × 2）
-SUMMARY_TRIGGER = 10          # 超过此轮数触发摘要压缩
-MAX_RETRIES = 2               # 最多重试次数
-MAX_TOKENS_QA = 800           # 问答场景 token 上限
+_chat_history_ts: dict[str, float] = {}   # 会话最后活跃时间
+
+# ── Token 省钱策略：各项收紧参数 ──
+MAX_HISTORY_MESSAGES = 10     # 最多 10 条消息（5 轮 × 2），从 20 砍半
+MAX_RETRIES = 0               # 不重试，400 错误重试纯浪费钱
+MAX_TOKENS_OUTPUT = 400       # 回复上限 400 token，从 800 砍半（问答够用）
+MAX_INPUT_TOKENS = 1200       # ★新增★ 输入 token 上限（这才是烧钱大头）
+MAX_USER_MSG_CHARS = 500      # ★新增★ 单条用户消息最多 500 字符
+MAX_USER_MSG_PER_MIN = 6      # ★新增★ 每分钟最多 6 次请求
+HISTORY_TTL_SEC = 1800        # ★新增★ 30 分钟无活动清历史（防累积烧钱）
+CACHE_TTL_SEC = 300           # ★新增★ 相同问题缓存 5 分钟
+
+
+# ── 请求频率限制 ──
+_rate_limiter: dict[str, list[float]] = {}  # { session_id: [timestamps] }
+
+def _check_rate_limit(session_id: str) -> bool:
+    """检查是否超过频率限制，返回 True=放行，False=拦截"""
+    now = time.time()
+    timestamps = _rate_limiter.get(session_id, [])
+    # 清除 60 秒前的记录
+    timestamps = [t for t in timestamps if now - t < 60]
+    if len(timestamps) >= MAX_USER_MSG_PER_MIN:
+        _rate_limiter[session_id] = timestamps
+        return False
+    timestamps.append(now)
+    _rate_limiter[session_id] = timestamps
+    return True
+
+
+# ── 简单响应缓存（同问题 5 分钟内不重复调用 API）──
+_response_cache: dict[str, tuple[float, str]] = {}  # { hash: (expire_ts, reply) }
+
+def _get_cached(query_hash: str) -> str | None:
+    """命中缓存返回回复，否则返回 None"""
+    entry = _response_cache.get(query_hash)
+    if entry and time.time() < entry[0]:
+        return entry[1]
+    # 清理过期条目
+    if entry:
+        del _response_cache[query_hash]
+    return None
+
+def _set_cache(query_hash: str, reply: str):
+    """写入缓存"""
+    _response_cache[query_hash] = (time.time() + CACHE_TTL_SEC, reply)
+    # 防止缓存无限膨胀，超过 200 条清最旧的
+    if len(_response_cache) > 200:
+        oldest = min(_response_cache, key=lambda k: _response_cache[k][0])
+        del _response_cache[oldest]
+
+
+# ── Token 估算器 ──
+def _estimate_tokens(text: str) -> int:
+    """粗略估算 token 数：中文 ~1.5 字/token，英文 ~4 字/token"""
+    chinese = sum(1 for c in text if '\u4e00' <= c <= '\u9fff')
+    other = len(text) - chinese
+    return int(chinese / 1.5 + other / 4)
+
+
+def _estimate_messages_tokens(messages: list[dict]) -> int:
+    """估算整个 messages 数组的 token 数"""
+    total = 0
+    for m in messages:
+        total += _estimate_tokens(str(m.get("content", "")))
+        total += 4  # role 等元数据开销
+    return total
+
+
+def _truncate_user_msg(msg: str, max_chars: int = MAX_USER_MSG_CHARS) -> str:
+    """截断过长的用户消息"""
+    if len(msg) > max_chars:
+        return msg[:max_chars] + "…（消息过长已截断）"
+    return msg
+
+
+def _trim_messages_to_budget(messages: list[dict], max_input: int = MAX_INPUT_TOKENS) -> list[dict]:
+    """从旧到新裁剪消息，确保总 token 不超预算。
+    始终保留 system prompt + 最后一条 user 消息，从中间历史开始丢弃。"""
+    if len(messages) <= 2:
+        return messages  # 只有 system + user，不裁
+
+    sys_msg = messages[0]
+    last_user = messages[-1]
+    history = messages[1:-1]
+
+    # 核心消息必须保留
+    core_tokens = _estimate_tokens(sys_msg["content"]) + _estimate_tokens(last_user["content"]) + 20
+
+    budget = max_input - core_tokens
+    if budget <= 0:
+        # 预算极紧：只保留 system + 当前问题
+        return [sys_msg, last_user]
+
+    # 从历史尾部向前保留（越新的越重要）
+    kept = []
+    used = 0
+    for m in reversed(history):
+        t = _estimate_tokens(str(m.get("content", ""))) + 4
+        if used + t <= budget:
+            kept.insert(0, m)
+            used += t
+        else:
+            break
+
+    return [sys_msg] + kept + [last_user]
 
 
 def _summarize_history(messages: list[dict]) -> str:
-    """将早期对话压缩为一段摘要文本，节省 token"""
-    if len(messages) <= 6:
+    """将早期对话压缩为一段摘要文本"""
+    if len(messages) <= 4:
         return ""
-    # 取前 6 条消息生成简单摘要
-    early = messages[:6]
+    early = messages[:4]
     parts = []
     for m in early:
         role = "用户" if m["role"] == "user" else "助手"
-        content = str(m.get("content", ""))[:120]
+        content = str(m.get("content", ""))[:80]
         parts.append(f"[{role}]: {content}")
     return "【历史摘要】" + "；".join(parts)
 
 
 def _build_messages(session_id: str, user_msg: str) -> list[dict]:
-    """构建发送给大模型的 messages 数组，自动管理上下文窗口"""
+    """构建消息数组，严格控制 token 预算"""
     history = _chat_history.get(session_id, [])
-
-    # 添加当前用户消息
     history.append({"role": "user", "content": user_msg})
 
-    # 如果历史过长（超过 10 轮），压缩早期对话
+    # 超过条数上限 → 压缩早期对话
     if len(history) > MAX_HISTORY_MESSAGES:
         summary = _summarize_history(history)
         if summary:
-            # 保留：摘要 + 最后 8 条消息（4 轮）
-            compressed = [{"role": "system", "content": summary}]
-            compressed.extend(history[-8:])
-            history = compressed
+            history = [{"role": "system", "content": summary}] + history[-6:]
         else:
             history = history[-MAX_HISTORY_MESSAGES:]
 
-    # 构建完整 messages
     system_prompt = {
         "role": "system",
-        "content": "你是Tina，专业的智慧果园病虫害防控AI助手。用数据说话，中文回答，专业简洁。"
+        "content": "你是Tina，智慧果园病虫害AI助手。中文回答，简洁专业。"
     }
-    return [system_prompt] + history
+    messages = [system_prompt] + history
+
+    # ★ 最后一道防线：按 token 预算裁剪
+    if _estimate_messages_tokens(messages) > MAX_INPUT_TOKENS:
+        messages = _trim_messages_to_budget(messages)
+
+    return messages
 
 
 def _save_history(session_id: str, user_msg: str, reply: str):
-    """保存对话到历史缓存"""
+    """保存对话到历史缓存，并记录活跃时间"""
     history = _chat_history.get(session_id, [])
     history.append({"role": "user", "content": user_msg})
     history.append({"role": "assistant", "content": reply})
-    # 保持上限
-    if len(history) > MAX_HISTORY_MESSAGES + 10:
+    if len(history) > MAX_HISTORY_MESSAGES + 6:
         summary = _summarize_history(history)
         if summary:
-            history = [{"role": "system", "content": summary}] + history[-8:]
+            history = [{"role": "system", "content": summary}] + history[-6:]
         else:
             history = history[-MAX_HISTORY_MESSAGES:]
     _chat_history[session_id] = history
+    _chat_history_ts[session_id] = time.time()
+
+
+def _cleanup_stale_histories():
+    """清理过期会话历史，释放内存"""
+    now = time.time()
+    stale = [sid for sid, ts in _chat_history_ts.items() if now - ts > HISTORY_TTL_SEC]
+    for sid in stale:
+        _chat_history.pop(sid, None)
+        _chat_history_ts.pop(sid, None)
+        _rate_limiter.pop(sid, None)
 
 
 @app.get("/login")
@@ -316,74 +425,86 @@ async def api_charts(request: Request):
 async def api_chat(request: Request):
     if not _verify_auth(request):
         return JSONResponse({"reply": "请先登录后再使用AI助手"})
+
+    # 定期清理过期会话
+    _cleanup_stale_histories()
+
     try:
         import requests as req
         body = await request.json()
         user_msg = (body.get("message", "") or "").strip()
         if not user_msg:
             return JSONResponse({"reply": "请输入您的问题"})
-        # 从请求中获取前端传递的历史，或使用服务端缓存
+
+        # ★ 截断过长消息
+        user_msg = _truncate_user_msg(user_msg)
+
         client_history = body.get("history") or []
         session_id = body.get("session_id") or request.cookies.get(COOKIE_NAME, "default")
     except Exception:
         return JSONResponse({"reply": "无法解析请求"})
 
-    # ── 构建消息：优先使用前端历史，否则用服务端缓存 ──
+    # ★ 频率限制
+    if not _check_rate_limit(session_id):
+        return JSONResponse({"reply": "提问太快啦，请稍等片刻再试～"})
+
+    # ★ 缓存命中检查（用消息哈希）
+    query_hash = hashlib.md5(user_msg.encode()).hexdigest()
+    cached = _get_cached(query_hash)
+    if cached:
+        _chat_history_ts[session_id] = time.time()
+        return JSONResponse({"reply": cached, "cached": True})
+
+    # ── 构建消息 ──
     if client_history and isinstance(client_history, list):
-        # 前端已传递历史，仅保留最近 10 轮
         history = client_history[-MAX_HISTORY_MESSAGES:]
         messages = [{
             "role": "system",
-            "content": "你是Tina，专业的智慧果园病虫害防控AI助手。用数据说话，中文回答，专业简洁。"
+            "content": "你是Tina，智慧果园病虫害AI助手。中文回答，简洁专业。"
         }] + history + [{"role": "user", "content": user_msg}]
     else:
         messages = _build_messages(session_id, user_msg)
 
-    # ── 带重试的 API 调用 ──
-    last_error = ""
-    for attempt in range(1, MAX_RETRIES + 2):  # 1 次初始 + 2 次重试 = 最多3次
-        try:
-            resp = req.post(
-                "https://api.deepseek.com/v1/chat/completions",
-                headers={
-                    "Authorization": "Bearer sk-62ad07704cc24a7d842d34f835708fb5",
-                    "Content-Type": "application/json",
-                },
-                json={
-                    "model": "deepseek-chat",
-                    "messages": messages,
-                    "stream": False,
-                    "temperature": 0.7,
-                    "max_tokens": MAX_TOKENS_QA,
-                    # ── 关键优化 ──
-                    "thinking": False,  # 关闭思考模式，减少 token 消耗
-                },
-                timeout=45,
-            )
-            resp.raise_for_status()
-            reply = resp.json().get("choices", [{}])[0].get("message", {}).get("content", "")
+    # ★ 最终 token 预算裁剪
+    if _estimate_messages_tokens(messages) > MAX_INPUT_TOKENS:
+        messages = _trim_messages_to_budget(messages)
 
-            if not reply:
-                return JSONResponse({"reply": "Tina未返回内容"})
+    # ── API 调用（不重试，400/500 重试浪费双倍钱）──
+    try:
+        resp = req.post(
+            "https://api.deepseek.com/v1/chat/completions",
+            headers={
+                "Authorization": "Bearer sk-62ad07704cc24a7d842d34f835708fb5",
+                "Content-Type": "application/json",
+            },
+            json={
+                "model": "deepseek-chat",
+                "messages": messages,
+                "stream": False,
+                "temperature": 0.7,
+                "max_tokens": MAX_TOKENS_OUTPUT,
+            },
+            timeout=30,
+        )
+        resp.raise_for_status()
+        reply = resp.json().get("choices", [{}])[0].get("message", {}).get("content", "")
 
-            # 保存到服务端缓存
-            _save_history(session_id, user_msg, reply)
-            return JSONResponse({"reply": reply})
-        except Exception as e:
-            err_str = str(e)
-            # 如果是速率限制或服务端错误，进行重试
-            if attempt <= MAX_RETRIES and (
-                "429" in err_str or "500" in err_str or "502" in err_str
-                or "503" in err_str or "timeout" in err_str.lower()
-                or "connection" in err_str.lower()
-            ):
-                wait = attempt * 1.5  # 递增等待: 1.5s, 3s
-                time.sleep(wait)
-                last_error = err_str
-                continue
-            return JSONResponse({"reply": f"Tina异常：{err_str}"})
+        if not reply:
+            return JSONResponse({"reply": "Tina未返回内容，请重试"})
 
-    return JSONResponse({"reply": f"Tina异常（已重试{MAX_RETRIES}次）：{last_error}"})
+        # 保存历史 + 写入缓存
+        _save_history(session_id, user_msg, reply)
+        _set_cache(query_hash, reply)
+        return JSONResponse({"reply": reply})
+
+    except Exception as e:
+        err_str = str(e)
+        # 仅对明确的临时性错误提示重试，不自动重试
+        if "429" in err_str:
+            return JSONResponse({"reply": "API 请求过于频繁，请稍后再试"})
+        if "timeout" in err_str.lower() or "connection" in err_str.lower():
+            return JSONResponse({"reply": "网络超时，请重试"})
+        return JSONResponse({"reply": f"Tina异常：{err_str}"})
 
 
 @app.post("/api/upload")
