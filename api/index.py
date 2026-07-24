@@ -712,7 +712,7 @@ async def api_chat(request: Request):
                 "Content-Type": "application/json",
             },
             json={
-                "model": "deepseek-chat",
+                "model": "deepseek-v4-flash",
                 "messages": messages,
                 "stream": False,
                 "temperature": 0.7,
