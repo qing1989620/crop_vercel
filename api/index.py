@@ -708,7 +708,7 @@ async def api_chat(request: Request):
         resp = req.post(
             "https://api.deepseek.com/v1/chat/completions",
             headers={
-                "Authorization": "Bearer sk-62ad07704cc24a7d842d34f835708fb5",
+                "Authorization": "Bearer sk-8825dca0b36443438a5a2cd605d1a17d",
                 "Content-Type": "application/json",
             },
             json={
